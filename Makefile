@@ -18,7 +18,8 @@ LDFLAGS = -lm -lgomp $(GDAL_LDFLAGS)
 
 # Source files
 MAIN_SRC = main.c
-HEADER_FILE = reference_materials.h
+#HEADER_FILE = reference_materials.h
+HEADER_FILE = enhanced_reference_materials.h
 TARGET_CPU = hypna_cpu
 TARGET_CUDA = hypna_cuda
 TARGET_OPENCL = hypna_opencl
