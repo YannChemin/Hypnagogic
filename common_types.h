@@ -21,78 +21,99 @@ typedef struct HyperspectralImage HyperspectralImage;
 typedef struct ClassificationResult ClassificationResult;
 typedef struct ProcessingContext ProcessingContext;
 
-// Full structure definitions
+/**
+ * Hyperspectral reference material spectrum
+ * Stores wavelength-reflectance pairs for a single material type
+ */
 struct HyperspectralVector {
-    float* wavelengths;
-    float* reflectance;
-    int size;
-    int material;
-    char name[64];
+    float* wavelengths;      ///< Array of wavelengths in nanometers
+    float* reflectance;      ///< Array of reflectance values [0.0, 1.0]
+    int size;                ///< Number of spectral samples
+    int material;            ///< Material type ID (enum MaterialType)
+    char name[64];           ///< Human-readable material name
 };
 
+/**
+ * Multi-band hyperspectral image with geospatial metadata
+ * Data stored in band-sequential (BSQ) format
+ */
 struct HyperspectralImage {
-    float* data;
-    float* wavelengths;
-    int width;
-    int height;
-    int bands;
-    double geotransform[6];
-    char* projection;
-    size_t data_size;
+    float* data;             ///< Image data array [bands × width × height]
+    float* wavelengths;      ///< Array of wavelengths for each band
+    int width;               ///< Image width in pixels
+    int height;              ///< Image height in pixels
+    int bands;               ///< Number of spectral bands
+    double geotransform[6];  ///< GDAL geotransform coefficients
+    char* projection;        ///< WKT projection string
+    size_t data_size;        ///< Total size of data array in bytes
 };
 
+/**
+ * Classification result with confidence scores
+ * Stores per-pixel class assignments and similarity scores
+ */
 struct ClassificationResult {
-    uint16_t* classification;
-    float* confidence;
-    int width;
-    int height;
-    double geotransform[6];
-    char* projection;
+    uint16_t* classification; ///< Per-pixel material class ID (supports >256 classes)
+    float* confidence;        ///< Per-pixel classification confidence [0.0, 1.0]
+    int width;                ///< Result width in pixels
+    int height;               ///< Result height in pixels
+    double geotransform[6];   ///< GDAL geotransform (copied from input)
+    char* projection;         ///< WKT projection (copied from input)
 };
 
+/**
+ * Main processing context structure
+ * Holds all data needed for classification workflow
+ */
 struct ProcessingContext {
-    HyperspectralVector* reference_vectors;
-    int num_reference_vectors;
-    int use_gpu;
-    int gpu_type;
-    size_t available_gpu_memory;
+    // Reference material library
+    HyperspectralVector* reference_vectors;  ///< Array of reference spectra
+    int num_reference_vectors;               ///< Number of reference materials
     
-    HyperspectralImage* image;
-    ClassificationResult* result;
+    // GPU configuration
+    int use_gpu;                  ///< Flag: 1 if using GPU, 0 for CPU
+    int gpu_type;                 ///< GPU type: 0=CUDA, 1=OpenCL, -1=none
+    size_t available_gpu_memory;  ///< Available GPU memory in bytes
     
-    // Fourier-specific additions
-    int use_fourier;
-    int fft_size;
-    float complex** reference_fft;
-    float** reference_fft_mag;
-    float* reference_energies;
+    // Image data
+    HyperspectralImage* image;      ///< Input hyperspectral image
+    ClassificationResult* result;   ///< Output classification result
     
-    // Thread-local FFT resources
-    fftwf_plan* thread_fft_plans;
-    float** thread_fft_input;
-    float complex** thread_fft_output;
-    float** thread_fft_mag;
-    int num_threads;
+    // Fourier transform configuration
+    int use_fourier;                ///< Flag: 1 to use Fourier classification
+    int fft_size;                   ///< FFT size (power of 2, ≥ image bands)
+    float complex** reference_fft;  ///< Pre-computed reference FFTs
+    float** reference_fft_mag;      ///< Pre-computed FFT magnitudes
+    float* reference_energies;      ///< Pre-computed spectral energies
+    
+    // Thread-local FFT resources for parallel processing
+    fftwf_plan* thread_fft_plans;      ///< FFTW plans (one per thread)
+    float** thread_fft_input;          ///< Input buffers (one per thread)
+    float complex** thread_fft_output; ///< Output buffers (one per thread)
+    float** thread_fft_mag;            ///< Magnitude buffers (one per thread)
+    int num_threads;                   ///< Number of OpenMP threads
     
     #ifdef CUDA_AVAILABLE
-    float* d_reference_data;
-    float* d_image_data;
-    float* d_wavelengths;
-    uint16_t* d_classification;
-    float* d_confidence;
-    cudaStream_t stream;
+    // CUDA device memory pointers
+    float* d_reference_data;      ///< Device reference spectra
+    float* d_image_data;          ///< Device image data
+    float* d_wavelengths;         ///< Device wavelength array
+    uint16_t* d_classification;   ///< Device classification output
+    float* d_confidence;          ///< Device confidence output
+    cudaStream_t stream;          ///< CUDA stream for async operations
     #endif
     
     #ifdef OPENCL_AVAILABLE
-    cl_context cl_context;
-    cl_command_queue cl_queue;
-    cl_program cl_program;
-    cl_kernel cl_classify_kernel;
-    cl_mem cl_reference_buffer;
-    cl_mem cl_image_buffer;
-    cl_mem cl_wavelength_buffer;
-    cl_mem cl_classification_buffer;
-    cl_mem cl_confidence_buffer;
+    // OpenCL context and resources
+    cl_context cl_context;                 ///< OpenCL context
+    cl_command_queue cl_queue;             ///< OpenCL command queue
+    cl_program cl_program;                 ///< Compiled OpenCL program
+    cl_kernel cl_classify_kernel;          ///< Classification kernel
+    cl_mem cl_reference_buffer;            ///< Device reference buffer
+    cl_mem cl_image_buffer;                ///< Device image buffer
+    cl_mem cl_wavelength_buffer;           ///< Device wavelength buffer
+    cl_mem cl_classification_buffer;       ///< Device classification buffer
+    cl_mem cl_confidence_buffer;           ///< Device confidence buffer
     #endif
 };
 

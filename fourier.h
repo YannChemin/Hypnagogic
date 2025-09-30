@@ -11,6 +11,8 @@
 
 /**
  * Calculate next power of 2 for FFT padding
+ * - Ensures FFT size is optimal for FFTW performance
+ * - Pads input data with zeros to reach power of 2
  * @param n Input size
  * @return Next power of 2 >= n
  */
@@ -18,6 +20,9 @@ int next_power_of_2(int n);
 
 /**
  * Generate cache filename based on FFT parameters
+ * - Creates cache directory if it doesn't exist
+ * - Filename includes FFT size, material count, and version
+ * - Allows automatic cache invalidation on parameter changes
  * @param fft_size FFT size (must be power of 2)
  * @param num_materials Number of reference materials
  * @return Dynamically allocated filename string (caller must free)
@@ -26,6 +31,9 @@ char* generate_fourier_cache_filename(int fft_size, int num_materials);
 
 /**
  * Save pre-computed Fourier transforms to cache file
+ * - Writes header with version and parameters for validation
+ * - Stores FFT data, magnitudes, and energy for each material
+ * - Enables fast loading on subsequent runs
  * @param ctx Processing context with computed FFT data
  * @param cache_file Path to cache file
  * @return 0 on success, -1 on error
@@ -34,6 +42,9 @@ int save_fourier_cache(ProcessingContext* ctx, const char* cache_file);
 
 /**
  * Load pre-computed Fourier transforms from cache file
+ * - Validates cache version and parameters match current setup
+ * - Skips expensive FFT computation if cache is valid
+ * - Returns error if cache is missing or incompatible
  * @param ctx Processing context (must have allocated FFT arrays)
  * @param cache_file Path to cache file
  * @return 0 on success, -1 on error or cache mismatch
@@ -42,9 +53,10 @@ int load_fourier_cache(ProcessingContext* ctx, const char* cache_file);
 
 /**
  * Initialize Fourier processing resources
- * - Determines optimal FFT size
+ * - Determines optimal FFT size (next power of 2)
  * - Allocates FFT buffers for each thread
  * - Creates FFTW plans for parallel processing
+ * - Initializes thread-local workspaces for efficiency
  * @param ctx Processing context
  * @return 0 on success, -1 on error
  */
@@ -53,15 +65,19 @@ int setup_fourier_processing(ProcessingContext* ctx);
 /**
  * Pre-compute Fourier transforms for all reference materials
  * - Interpolates reference spectra to image wavelength grid
- * - Computes FFT for each reference
+ * - Computes FFT for each reference material
  * - Calculates magnitude and energy normalization
+ * - Enables fast pixel-by-pixel comparison during classification
  * @param ctx Processing context
  */
 void precompute_fourier_references(ProcessingContext* ctx);
 
 /**
  * Calculate optimized Fourier-based similarity between pixel and reference
- * Uses magnitude correlation in frequency domain for robust matching
+ * - Uses magnitude correlation in frequency domain for robust matching
+ * - Skips DC component for better material discrimination
+ * - Normalized by energy for scale-invariant comparison
+ * - More robust to spectral shifts than spatial domain methods
  * @param pixel_fft Pixel FFT (complex values)
  * @param ref_fft Reference FFT (complex values)
  * @param pixel_mag Pixel FFT magnitudes
@@ -77,6 +93,7 @@ float calculate_fourier_similarity_optimized(float complex* pixel_fft, float com
  * - Multi-threaded CPU implementation with OpenMP
  * - Each thread maintains its own FFT workspace
  * - Uses pre-computed reference FFTs for efficiency
+ * - Dynamic scheduling for load balancing across threads
  * @param ctx Processing context
  * @return 0 on success, -1 on error
  */
@@ -86,6 +103,7 @@ int classify_image_fourier_cpu(ProcessingContext* ctx);
  * Clean up all Fourier processing resources
  * - Frees FFT buffers and plans
  * - Releases FFTW thread resources
+ * - Safe to call even if Fourier processing not enabled
  * @param ctx Processing context
  */
 void cleanup_fourier_resources(ProcessingContext* ctx);
