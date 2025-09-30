@@ -13,6 +13,7 @@ LDFLAGS = -lm -lgomp
 
 # Source files
 MAIN_SRC = main.c
+HEADER_FILE = reference_materials.h
 TARGET_CPU = hypna_cpu
 TARGET_CUDA = hypna_cuda
 TARGET_OPENCL = hypna_opencl
@@ -21,13 +22,13 @@ TARGET_OPENCL = hypna_opencl
 default: $(TARGET_CPU)
 
 # CPU-only version with OpenMP
-$(TARGET_CPU): $(MAIN_SRC)
+$(TARGET_CPU): $(MAIN_SRC) $(HEADER_FILE)
 	$(CC) $(CFLAGS) -o $(TARGET_CPU) $(MAIN_SRC) $(LDFLAGS)
 	@echo "Built CPU version with OpenMP support"
 
 # CUDA version
 cuda: $(TARGET_CUDA)
-$(TARGET_CUDA): $(MAIN_SRC)
+$(TARGET_CUDA): $(MAIN_SRC) $(HEADER_FILE)
 	@if command -v nvcc >/dev/null 2>&1; then \
 		$(NVCC) $(NVCCFLAGS) -DCUDA_AVAILABLE -Xcompiler "$(CFLAGS)" \
 		-o $(TARGET_CUDA) $(MAIN_SRC) -lcuda -lcudart -lcublas; \
@@ -39,7 +40,7 @@ $(TARGET_CUDA): $(MAIN_SRC)
 
 # OpenCL version
 opencl: $(TARGET_OPENCL)
-$(TARGET_OPENCL): $(MAIN_SRC)
+$(TARGET_OPENCL): $(MAIN_SRC) $(HEADER_FILE)
 	@if pkg-config --exists OpenCL 2>/dev/null; then \
 		$(CC) $(CFLAGS) -DOPENCL_AVAILABLE `pkg-config --cflags OpenCL` \
 		-o $(TARGET_OPENCL) $(MAIN_SRC) $(LDFLAGS) `pkg-config --libs OpenCL`; \

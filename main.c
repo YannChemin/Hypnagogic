@@ -4,6 +4,7 @@
 #include <math.h>
 #include <time.h>
 #include <omp.h>
+#include "reference_materials.h"
 
 // Conditional includes based on available GPU support
 #ifdef CUDA_AVAILABLE
@@ -15,37 +16,13 @@
 #include <CL/cl.h>
 #endif
 
-#define MAX_REFERENCE_VECTORS 10
 #define MAX_VECTOR_SIZE 4096
 #define SIMILARITY_THRESHOLD 0.8
 #define GPU_MEMORY_THRESHOLD (1024 * 1024 * 1024) // 1GB
 
-// Material types for reference vectors
-typedef enum {
-    VEGETATION,
-    WATER,
-    GRANITE,
-    LIMESTONE,
-    SANDSTONE,
-    SAND,
-    CLAY,
-    PAINT,
-    PLASTIC,
-    HYDROCARBON
-} MaterialType;
-
-// Hyperspectral vector structure
-typedef struct {
-    float* wavelengths;
-    float* reflectance;
-    int size;
-    MaterialType material;
-    char name[64];
-} HyperspectralVector;
-
 // Processing context
 typedef struct {
-    HyperspectralVector reference_vectors[MAX_REFERENCE_VECTORS];
+    HyperspectralVector* reference_vectors;
     int num_reference_vectors;
     int use_gpu;
     int gpu_type; // 0: CUDA, 1: OpenCL
@@ -71,7 +48,7 @@ typedef struct {
 // Function prototypes
 void initialize_context(ProcessingContext* ctx);
 void cleanup_context(ProcessingContext* ctx);
-void initialize_reference_vectors(ProcessingContext* ctx);
+int load_reference_vectors_from_header(ProcessingContext* ctx);
 HyperspectralVector* create_hyperspectral_vector(int size, MaterialType material, const char* name);
 void destroy_hyperspectral_vector(HyperspectralVector* vec);
 int detect_gpu_capabilities(ProcessingContext* ctx);
@@ -144,11 +121,16 @@ int main() {
     ProcessingContext ctx;
     initialize_context(&ctx);
     
-    printf("Hyperspectral Vector Processing System\n");
-    printf("=====================================\n");
+    printf("Hyperspectral Vector Processing System V3\n");
+    printf("==========================================\n");
     
-    // Initialize reference vectors with hardcoded data
-    initialize_reference_vectors(&ctx);
+    // Load reference vectors from header file - NO MORE SYNTHETIC DATA
+    printf("Loading reference materials from header file...\n");
+    if (load_reference_vectors_from_header(&ctx) != 0) {
+        printf("Error: Failed to load reference vectors from header file\n");
+        cleanup_context(&ctx);
+        return -1;
+    }
     
     // Detect GPU capabilities
     int gpu_detected = detect_gpu_capabilities(&ctx);
@@ -162,19 +144,44 @@ int main() {
         printf("Number of CPU cores: %d\n", omp_get_max_threads());
     }
     
-    // Create a test input vector (simulating received data)
-    HyperspectralVector* input = create_hyperspectral_vector(200, VEGETATION, "test_input");
+    // Create a test input vector (simulating received data with vegetation-like characteristics)
+    HyperspectralVector* input = create_hyperspectral_vector(200, VEGETATION, "received_input");
     
-    // Generate synthetic test data
-    for (int i = 0; i < input->size; i++) {
-        input->wavelengths[i] = 400.0f + i * 2.0f; // 400-800nm range
-        input->reflectance[i] = 0.3f + 0.4f * sinf(i * 0.1f) + (rand() % 100) / 1000.0f;
+    if (!input) {
+        printf("Error: Failed to create test input vector\n");
+        cleanup_context(&ctx);
+        return -1;
     }
     
-    printf("\nProcessing input vector with %d spectral bands\n", input->size);
+    // Generate test input data that resembles vegetation spectrum for demonstration
+    printf("\nGenerating test input vector (simulating received hyperspectral data)...\n");
+    srand(time(NULL));
+    for (int i = 0; i < input->size; i++) {
+        input->wavelengths[i] = 400.0f + i * 2.0f; // 400-798nm range
+        // Simulate vegetation-like spectrum with NIR plateau for testing
+        if (input->wavelengths[i] < 680) {
+            input->reflectance[i] = 0.05f + 0.05f * sinf(i * 0.1f) + (rand() % 100) / 2000.0f;
+        } else {
+            input->reflectance[i] = 0.4f + 0.3f * (1.0f + sinf(i * 0.05f)) + (rand() % 100) / 2000.0f;
+        }
+        // Ensure reflectance stays in valid range
+        if (input->reflectance[i] > 1.0f) input->reflectance[i] = 1.0f;
+        if (input->reflectance[i] < 0.0f) input->reflectance[i] = 0.0f;
+    }
     
-    // Perform similarity matching
-    float similarities[MAX_REFERENCE_VECTORS];
+    printf("Input vector: %d spectral bands (%.1f - %.1f nm)\n", 
+           input->size, input->wavelengths[0], input->wavelengths[input->size-1]);
+    
+    // Perform similarity matching using REAL reference data from header file
+    printf("\nMatching against %d reference materials from header file:\n", ctx.num_reference_vectors);
+    float* similarities = (float*)malloc(ctx.num_reference_vectors * sizeof(float));
+    if (!similarities) {
+        printf("Error: Failed to allocate similarity array\n");
+        destroy_hyperspectral_vector(input);
+        cleanup_context(&ctx);
+        return -1;
+    }
+    
     clock_t start = clock();
     
     if (ctx.use_gpu && ctx.gpu_type == 0) {
@@ -193,8 +200,8 @@ int main() {
     double processing_time = ((double)(end - start)) / CLOCKS_PER_SEC;
     
     printf("\nProcessing completed in %.4f seconds\n", processing_time);
-    printf("\nSimilarity Results:\n");
-    printf("==================\n");
+    printf("\nSimilarity Results (using real reference materials):\n");
+    printf("===================================================\n");
     
     for (int i = 0; i < ctx.num_reference_vectors; i++) {
         printf("%-12s: %.4f %s\n", 
@@ -215,8 +222,13 @@ int main() {
     
     printf("\nBest match: %s (similarity: %.4f)\n", 
            ctx.reference_vectors[best_match].name, best_similarity);
+    printf("Reference spectrum: %d bands (%.1f - %.1f nm)\n",
+           ctx.reference_vectors[best_match].size,
+           ctx.reference_vectors[best_match].wavelengths[0],
+           ctx.reference_vectors[best_match].wavelengths[ctx.reference_vectors[best_match].size-1]);
     
     // Cleanup
+    free(similarities);
     destroy_hyperspectral_vector(input);
     cleanup_context(&ctx);
     
@@ -226,6 +238,7 @@ int main() {
 void initialize_context(ProcessingContext* ctx) {
     memset(ctx, 0, sizeof(ProcessingContext));
     ctx->num_reference_vectors = 0;
+    ctx->reference_vectors = NULL;  // Initialize to NULL for dynamic allocation
     ctx->use_gpu = 0;
     ctx->gpu_type = -1;
     ctx->available_gpu_memory = 0;
@@ -233,13 +246,16 @@ void initialize_context(ProcessingContext* ctx) {
 
 void cleanup_context(ProcessingContext* ctx) {
     // Clean up reference vectors
-    for (int i = 0; i < ctx->num_reference_vectors; i++) {
-        if (ctx->reference_vectors[i].wavelengths) {
-            free(ctx->reference_vectors[i].wavelengths);
+    if (ctx->reference_vectors) {
+        for (int i = 0; i < ctx->num_reference_vectors; i++) {
+            if (ctx->reference_vectors[i].wavelengths) {
+                free(ctx->reference_vectors[i].wavelengths);
+            }
+            if (ctx->reference_vectors[i].reflectance) {
+                free(ctx->reference_vectors[i].reflectance);
+            }
         }
-        if (ctx->reference_vectors[i].reflectance) {
-            free(ctx->reference_vectors[i].reflectance);
-        }
+        free(ctx->reference_vectors);
     }
     
     #ifdef CUDA_AVAILABLE
@@ -263,84 +279,109 @@ void cleanup_context(ProcessingContext* ctx) {
     #endif
 }
 
-void initialize_reference_vectors(ProcessingContext* ctx) {
-    const char* material_names[] = {
-        "Vegetation", "Water", "Granite", "Limestone", "Sandstone",
-        "Sand", "Clay", "Paint", "Plastic", "Hydrocarbon"
-    };
+// MAIN FUNCTION: Load reference vectors from header file (NO synthetic generation)
+int load_reference_vectors_from_header(ProcessingContext* ctx) {
+    // Get the number of reference materials from the header
+    ctx->num_reference_vectors = NUM_REFERENCE_MATERIALS;
     
-    MaterialType materials[] = {
-        VEGETATION, WATER, GRANITE, LIMESTONE, SANDSTONE,
-        SAND, CLAY, PAINT, PLASTIC, HYDROCARBON
-    };
-    
-    // Create reference vectors with synthetic but realistic spectral signatures
-    for (int i = 0; i < MAX_REFERENCE_VECTORS; i++) {
-        int size = 150 + i * 20; // Variable sizes from 150 to 330
-        ctx->reference_vectors[i].size = size;
-        ctx->reference_vectors[i].material = materials[i];
-        strcpy(ctx->reference_vectors[i].name, material_names[i]);
-        
-        ctx->reference_vectors[i].wavelengths = (float*)malloc(size * sizeof(float));
-        ctx->reference_vectors[i].reflectance = (float*)malloc(size * sizeof(float));
-        
-        // Generate synthetic spectral data
-        for (int j = 0; j < size; j++) {
-            ctx->reference_vectors[i].wavelengths[j] = 350.0f + j * 2.5f;
-            
-            float wavelength = ctx->reference_vectors[i].wavelengths[j];
-            float base_reflectance = 0.3f;
-            
-            // Material-specific spectral characteristics
-            switch (materials[i]) {
-                case VEGETATION:
-                    base_reflectance = wavelength > 700 ? 0.7f : 0.1f; // NIR plateau
-                    break;
-                case WATER:
-                    base_reflectance = wavelength < 600 ? 0.1f : 0.02f; // Blue absorption
-                    break;
-                case GRANITE:
-                    base_reflectance = 0.2f + 0.1f * sinf(wavelength * 0.01f);
-                    break;
-                case LIMESTONE:
-                    base_reflectance = 0.4f + 0.1f * cosf(wavelength * 0.008f);
-                    break;
-                case SAND:
-                    base_reflectance = 0.3f + 0.2f * (wavelength - 400) / 400;
-                    break;
-                case CLAY:
-                    base_reflectance = 0.25f + 0.1f * sinf(wavelength * 0.005f);
-                    break;
-                case PAINT:
-                    base_reflectance = 0.6f + 0.2f * sinf(wavelength * 0.02f);
-                    break;
-                case PLASTIC:
-                    base_reflectance = 0.4f + 0.15f * cosf(wavelength * 0.015f);
-                    break;
-                case HYDROCARBON:
-                    base_reflectance = 0.1f + 0.05f * sinf(wavelength * 0.03f);
-                    break;
-                default:
-                    base_reflectance = 0.3f;
-            }
-            
-            ctx->reference_vectors[i].reflectance[j] = base_reflectance + 
-                                                     (rand() % 100 - 50) / 1000.0f;
-        }
-        
-        ctx->num_reference_vectors++;
+    if (ctx->num_reference_vectors == 0) {
+        printf("Error: No reference materials found in header file\n");
+        return -1;
     }
     
-    printf("Initialized %d reference vectors\n", ctx->num_reference_vectors);
+    printf("Found %d reference materials in header file\n", ctx->num_reference_vectors);
+    
+    // Allocate memory for reference vectors
+    ctx->reference_vectors = (HyperspectralVector*)malloc(
+        ctx->num_reference_vectors * sizeof(HyperspectralVector));
+    
+    if (!ctx->reference_vectors) {
+        printf("Error: Failed to allocate memory for reference vectors\n");
+        return -1;
+    }
+    
+    // Load each reference material from the header file arrays
+    for (int i = 0; i < ctx->num_reference_vectors; i++) {
+        const ReferenceMaterialData* mat_data = &reference_materials[i];
+        HyperspectralVector* vec = &ctx->reference_vectors[i];
+        
+        vec->size = mat_data->size;
+        vec->material = mat_data->material;
+        strncpy(vec->name, mat_data->name, sizeof(vec->name) - 1);
+        vec->name[sizeof(vec->name) - 1] = '\0'; // Ensure null termination
+        
+        // Validate data from header
+        if (vec->size <= 0 || vec->size > MAX_VECTOR_SIZE) {
+            printf("Error: Invalid size %d for material %s\n", vec->size, vec->name);
+            return -1;
+        }
+        
+        if (!mat_data->wavelengths || !mat_data->reflectance) {
+            printf("Error: NULL data pointers for material %s\n", vec->name);
+            return -1;
+        }
+        
+        // Allocate memory for wavelengths and reflectance
+        vec->wavelengths = (float*)malloc(vec->size * sizeof(float));
+        vec->reflectance = (float*)malloc(vec->size * sizeof(float));
+        
+        if (!vec->wavelengths || !vec->reflectance) {
+            printf("Error: Failed to allocate memory for vector %s\n", vec->name);
+            return -1;
+        }
+        
+        // Copy REAL data from header file (const arrays) - NO SYNTHETIC GENERATION
+        for (int j = 0; j < vec->size; j++) {
+            vec->wavelengths[j] = mat_data->wavelengths[j];
+            vec->reflectance[j] = mat_data->reflectance[j];
+        }
+        
+        // Validate wavelength ordering
+        for (int j = 1; j < vec->size; j++) {
+            if (vec->wavelengths[j] <= vec->wavelengths[j-1]) {
+                printf("Warning: Non-monotonic wavelengths in %s at index %d (%.1f -> %.1f)\n", 
+                       vec->name, j, vec->wavelengths[j-1], vec->wavelengths[j]);
+            }
+        }
+        
+        printf("Loaded %s: %d bands (%.1f-%.1f nm) - REAL DATA FROM HEADER\n", 
+               vec->name, vec->size, vec->wavelengths[0], vec->wavelengths[vec->size-1]);
+    }
+    
+    printf("Successfully loaded %d REAL reference vectors from header file\n", ctx->num_reference_vectors);
+    return 0;
 }
 
 HyperspectralVector* create_hyperspectral_vector(int size, MaterialType material, const char* name) {
+    if (size <= 0 || size > MAX_VECTOR_SIZE) {
+        printf("Error: Invalid vector size %d\n", size);
+        return NULL;
+    }
+    
     HyperspectralVector* vec = (HyperspectralVector*)malloc(sizeof(HyperspectralVector));
+    if (!vec) {
+        printf("Error: Failed to allocate memory for hyperspectral vector\n");
+        return NULL;
+    }
+    
     vec->size = size;
     vec->material = material;
-    strcpy(vec->name, name);
+    strncpy(vec->name, name, sizeof(vec->name) - 1);
+    vec->name[sizeof(vec->name) - 1] = '\0';  // Ensure null termination
+    
     vec->wavelengths = (float*)malloc(size * sizeof(float));
     vec->reflectance = (float*)malloc(size * sizeof(float));
+    
+    if (!vec->wavelengths || !vec->reflectance) {
+        printf("Error: Failed to allocate memory for vector data\n");
+        destroy_hyperspectral_vector(vec);
+        return NULL;
+    }
+    
+    // Initialize to zero
+    memset(vec->wavelengths, 0, size * sizeof(float));
+    memset(vec->reflectance, 0, size * sizeof(float));
+    
     return vec;
 }
 
@@ -449,7 +490,7 @@ void load_data_to_gpu(ProcessingContext* ctx) {
         ctx->cl_input_buffer = clCreateBuffer(ctx->cl_context, CL_MEM_READ_ONLY, 
                                              MAX_VECTOR_SIZE * 2 * sizeof(float), NULL, NULL);
         ctx->cl_result_buffer = clCreateBuffer(ctx->cl_context, CL_MEM_WRITE_ONLY, 
-                                              MAX_REFERENCE_VECTORS * sizeof(float), NULL, NULL);
+                                              ctx->num_reference_vectors * sizeof(float), NULL, NULL);
         
         // Copy reference data to GPU
         float* host_data = (float*)malloc(total_size);
@@ -471,6 +512,8 @@ void load_data_to_gpu(ProcessingContext* ctx) {
 }
 
 float* match_vectors_cpu(ProcessingContext* ctx, HyperspectralVector* input, float* similarities) {
+    printf("Starting CPU similarity matching with %d REAL reference vectors...\n", ctx->num_reference_vectors);
+    
     #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < ctx->num_reference_vectors; i++) {
         similarities[i] = calculate_similarity(
@@ -553,15 +596,43 @@ float* match_vectors_opencl(ProcessingContext* ctx, HyperspectralVector* input, 
 
 float calculate_similarity(float* vec1_wav, float* vec1_ref, float* vec2_wav, float* vec2_ref, 
                           int size1, int size2) {
+    // Validate inputs
+    if (!vec1_wav || !vec1_ref || !vec2_wav || !vec2_ref || size1 <= 0 || size2 <= 0) {
+        printf("Error: Invalid input to calculate_similarity\n");
+        return 0.0f;
+    }
+    
     // For different sized vectors, interpolate to common wavelength grid
     int common_size = (size1 < size2) ? size1 : size2;
+    if (common_size > MAX_VECTOR_SIZE / 2) {
+        common_size = MAX_VECTOR_SIZE / 2;  // Safety limit
+    }
+    
     float* interp_ref1 = (float*)malloc(common_size * sizeof(float));
     float* interp_ref2 = (float*)malloc(common_size * sizeof(float));
     float* common_wav = (float*)malloc(common_size * sizeof(float));
     
-    // Create common wavelength grid
+    if (!interp_ref1 || !interp_ref2 || !common_wav) {
+        printf("Error: Memory allocation failed in calculate_similarity\n");
+        if (interp_ref1) free(interp_ref1);
+        if (interp_ref2) free(interp_ref2);
+        if (common_wav) free(common_wav);
+        return 0.0f;
+    }
+    
+    // Create common wavelength grid based on overlap
     float min_wav = fmaxf(vec1_wav[0], vec2_wav[0]);
     float max_wav = fminf(vec1_wav[size1-1], vec2_wav[size2-1]);
+    
+    // Check for valid overlap
+    if (min_wav >= max_wav) {
+        printf("Warning: No spectral overlap between vectors\n");
+        free(interp_ref1);
+        free(interp_ref2);
+        free(common_wav);
+        return 0.0f;
+    }
+    
     float step = (max_wav - min_wav) / (common_size - 1);
     
     for (int i = 0; i < common_size; i++) {
@@ -583,7 +654,10 @@ float calculate_similarity(float* vec1_wav, float* vec1_ref, float* vec2_wav, fl
         norm2 += interp_ref2[i] * interp_ref2[i];
     }
     
-    float similarity = dot_product / (sqrtf(norm1) * sqrtf(norm2));
+    float similarity = 0.0f;
+    if (norm1 > 0.0f && norm2 > 0.0f) {
+        similarity = dot_product / (sqrtf(norm1) * sqrtf(norm2));
+    }
     
     free(interp_ref1);
     free(interp_ref2);
@@ -595,10 +669,26 @@ float calculate_similarity(float* vec1_wav, float* vec1_ref, float* vec2_wav, fl
 void interpolate_vector(float* src_wav, float* src_ref, int src_size, 
                        float* dst_wav, float* dst_ref, int dst_size,
                        float* interp_ref) {
+    // Validate inputs
+    if (!src_wav || !src_ref || !dst_wav || !interp_ref || src_size <= 0 || dst_size <= 0) {
+        printf("Error: Invalid input to interpolate_vector\n");
+        return;
+    }
+    
     for (int i = 0; i < dst_size; i++) {
         float target_wav = dst_wav[i];
         
-        // Find surrounding points
+        // Handle boundary cases
+        if (target_wav <= src_wav[0]) {
+            interp_ref[i] = src_ref[0];
+            continue;
+        }
+        if (target_wav >= src_wav[src_size-1]) {
+            interp_ref[i] = src_ref[src_size-1];
+            continue;
+        }
+        
+        // Find surrounding points for interpolation
         int left = 0, right = src_size - 1;
         
         for (int j = 0; j < src_size - 1; j++) {
@@ -610,10 +700,12 @@ void interpolate_vector(float* src_wav, float* src_ref, int src_size,
         }
         
         // Linear interpolation
-        if (left == right || src_wav[right] == src_wav[left]) {
+        if (left == right || fabsf(src_wav[right] - src_wav[left]) < 1e-6f) {
             interp_ref[i] = src_ref[left];
         } else {
             float t = (target_wav - src_wav[left]) / (src_wav[right] - src_wav[left]);
+            // Clamp t to [0, 1] for safety
+            t = fmaxf(0.0f, fminf(1.0f, t));
             interp_ref[i] = src_ref[left] + t * (src_ref[right] - src_ref[left]);
         }
     }
