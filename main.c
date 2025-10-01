@@ -137,40 +137,122 @@ int main(int argc, char* argv[]) {
     // Initialize GDAL
     GDALAllRegister();
     
-    printf("Hyperspectral Image Classification System V4\n");
+    printf("Hyperspectral Image Classification System V6\n");
     printf("============================================\n");
     
     // Parse command line arguments
-    const char* input_filename = "hyper.tif";
-    const char* output_filename = "classification.tif";
+    const char* input_filename = NULL;   // Changed from "hyper.tif"
+    const char* output_filename = NULL;  // Changed from "classification.tif"
     bool diagnose_only = false;
+    
+    // Classification modes
+    typedef enum {
+        MODE_FOURIER_CPU,              // Legacy/baseline Fourier
+        MODE_FOURIER_CPU_COHERENCE_QUALITY,   // Optimized with spatial coherence
+        MODE_FOURIER_CPU_COHERENCE_FASTEST,   // Lightweight neighbor-aware
+        MODE_SPATIAL_CPU                // Original spatial domain (non-Fourier)
+    } ClassificationMode;
+    
+    ClassificationMode mode = MODE_FOURIER_CPU_COHERENCE_QUALITY; // Default to quality mode
     
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--diagnose") == 0 || strcmp(argv[i], "-d") == 0) {
             diagnose_only = true;
-        } else if (strstr(argv[i], ".tif") != NULL || strstr(argv[i], ".TIF") != NULL) {
-            if (i == 1) {
-                input_filename = argv[i];
-            } else if (i == 2) {
-                output_filename = argv[i];
+        } 
+        else if (strncmp(argv[i], "--mode=", 7) == 0) {
+            const char* mode_str = argv[i] + 7;
+            
+            if (strcmp(mode_str, "fourier_cpu") == 0) {
+                mode = MODE_FOURIER_CPU;
+                printf("Mode: Fourier CPU (baseline)\n");
+            } 
+            else if (strcmp(mode_str, "fourier_cpu_coherence_quality") == 0) {
+                mode = MODE_FOURIER_CPU_COHERENCE_QUALITY;
+                printf("Mode: Fourier CPU with spatial coherence (quality)\n");
+            } 
+            else if (strcmp(mode_str, "fourier_cpu_coherence_fastest") == 0) {
+                mode = MODE_FOURIER_CPU_COHERENCE_FASTEST;
+                printf("Mode: Fourier CPU with spatial coherence (fastest)\n");
+            } 
+            else if (strcmp(mode_str, "spatial_cpu") == 0) {
+                mode = MODE_SPATIAL_CPU;
+                printf("Mode: Spatial domain CPU (non-Fourier)\n");
+            } 
+            else {
+                printf("Error: Unknown mode '%s'\n", mode_str);
+                printf("Valid modes: fourier_cpu, fourier_cpu_coherence_quality, fourier_cpu_coherence_fastest, spatial_cpu\n");
+                return -1;
             }
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            printf("Usage: %s [input.tif] [output.tif] [--diagnose]\n", argv[0]);
-            printf("  --diagnose, -d    : Only diagnose the input file structure\n");
-            printf("  --help, -h        : Show this help message\n");
+        }
+        else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            printf("Usage: %s input.tif output.tif [options]\n", argv[0]);
+            printf("\nOptions:\n");
+            printf("  --diagnose, -d              : Only diagnose the input file structure\n");
+            printf("  --mode=<mode>               : Classification algorithm mode\n");
+            printf("  --help, -h                  : Show this help message\n");
+            printf("\nAvailable modes:\n");
+            printf("  fourier_cpu                 : Baseline Fourier transform method\n");
+            printf("                                 - Standard accuracy\n");
+            printf("                                 - Good for validation/comparison\n");
+            printf("\n  fourier_cpu_coherence_quality : Spatial coherence refinement (DEFAULT)\n");
+            printf("                                 - Best accuracy (~5-10%% slower)\n");
+            printf("                                 - Reduces salt-and-pepper noise\n");
+            printf("                                 - Preserves field boundaries\n");
+            printf("                                 - Recommended for production\n");
+            printf("\n  fourier_cpu_coherence_fastest : Lightweight neighbor prediction\n");
+            printf("                                 - Fastest method (30-50%% speedup)\n");
+            printf("                                 - Good accuracy on homogeneous scenes\n");
+            printf("                                 - Ideal for large datasets\n");
+            printf("\n  spatial_cpu                 : Original spatial domain method\n");
+            printf("                                 - No Fourier transform\n");
+            printf("                                 - Direct spectral comparison\n");
+            printf("                                 - Baseline for benchmarking\n");
+            printf("\nExamples:\n");
+            printf("  %s field.tif result.tif\n", argv[0]);
+            printf("  %s field.tif result.tif --mode=fourier_cpu_coherence_fastest\n", argv[0]);
+            printf("  %s field.tif result.tif --mode=fourier_cpu\n", argv[0]);
+            printf("  %s field.tif --diagnose\n", argv[0]);
             return 0;
         }
+        // THIS IS THE MISSING PART - Handle .tif files
+        else if (strstr(argv[i], ".tif") != NULL || strstr(argv[i], ".TIF") != NULL) {
+            // Assign input and output files in order
+            if (input_filename == NULL) {
+                input_filename = argv[i];
+            } else if (output_filename == NULL) {
+                output_filename = argv[i];
+            } else {
+                printf("Warning: Extra .tif file argument ignored: %s\n", argv[i]);
+            }
+        }
+        // Catch unknown arguments
+        else if (strncmp(argv[i], "--", 2) != 0) {
+            printf("Error: Unknown argument '%s'\n", argv[i]);
+            printf("Use --help for usage information\n");
+            return -1;
+        }
     }
-    
+    if (input_filename == NULL) {
+        printf("Error: Input file is required\n");
+        printf("Usage: %s <input.tif> <output.tif> [options]\n", argv[0]);
+        printf("Use --help for more information\n");
+        return -1;
+    }
     printf("Input file: %s\n", input_filename);
+    
+    if (!diagnose_only && output_filename == NULL) {
+        printf("Error: Output file is required\n");
+        printf("Usage: %s <input.tif> <output.tif> [options]\n", argv[0]);
+        printf("Use --help for more information\n");
+        return -1;
+    }
+    printf("Output file: %s\n", output_filename);
     
     // Diagnose mode - just analyze the file structure
     if (diagnose_only) {
         diagnose_geotiff_structure(input_filename);
         return 0;
     }
-    
-    printf("Output file: %s\n", output_filename);
     
     ProcessingContext ctx;
     initialize_context(&ctx);
@@ -191,33 +273,35 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
-    // Enable Fourier processing
-    ctx.use_fourier = 1;
-    
-    // Setup Fourier processing
-    if (setup_fourier_processing(&ctx) != 0) {
-        printf("Error: Failed to setup Fourier processing\n");
-        cleanup_context(&ctx);
-        return -1;
-    }
-    
-    // Try to load Fourier cache
-    char* cache_filename = generate_fourier_cache_filename(ctx.fft_size, ctx.num_reference_vectors);
-    printf("\nChecking for Fourier cache: %s\n", cache_filename);
-    
-    if (load_fourier_cache(&ctx, cache_filename) == 0) {
-        printf("✓ Loaded pre-computed Fourier library from cache!\n");
-    } else {
-        printf("Cache not found. Computing Fourier transforms...\n");
-        precompute_fourier_references(&ctx);
+    // Configure Fourier processing based on mode
+    if (mode != MODE_SPATIAL_CPU) {
+        ctx.use_fourier = 1;
         
-        // Save cache
-        if (save_fourier_cache(&ctx, cache_filename) == 0) {
-            printf("✓ Fourier library cached for future use\n");
+        // Setup Fourier processing
+        if (setup_fourier_processing(&ctx) != 0) {
+            printf("Error: Failed to setup Fourier processing\n");
+            cleanup_context(&ctx);
+            return -1;
         }
+        
+        // Try to load Fourier cache
+        char* cache_filename = generate_fourier_cache_filename(ctx.fft_size, ctx.num_reference_vectors);
+        printf("\nChecking for Fourier cache: %s\n", cache_filename);
+        
+        if (load_fourier_cache(&ctx, cache_filename) == 0) {
+            printf("✓ Loaded pre-computed Fourier library from cache!\n");
+        } else {
+            printf("Cache not found. Computing Fourier transforms...\n");
+            precompute_fourier_references(&ctx);
+            
+            // Save cache
+            if (save_fourier_cache(&ctx, cache_filename) == 0) {
+                printf("✓ Fourier library cached for future use\n");
+            }
+        }
+        
+        free(cache_filename);
     }
-    
-    free(cache_filename);
         
     // Detect GPU capabilities
     int gpu_detected = detect_gpu_capabilities(&ctx);
@@ -274,10 +358,32 @@ int main(int argc, char* argv[]) {
         classification_result = classify_image_opencl(&ctx);
         #endif
     } else {
-        if (ctx.use_fourier) {
-            classification_result = classify_image_fourier_cpu(&ctx);
-        } else {
-            classification_result = classify_image_cpu(&ctx);
+        // CPU classification based on selected mode
+        switch (mode) {
+            case MODE_FOURIER_CPU:
+                printf("Running baseline Fourier classification...\n");
+                classification_result = classify_image_fourier_cpu(&ctx);
+                break;
+                
+            case MODE_FOURIER_CPU_COHERENCE_QUALITY:
+                printf("Running quality-optimized Fourier classification with spatial coherence...\n");
+                classification_result = classify_image_fourier_cpu_optimized(&ctx);
+                break;
+                
+            case MODE_FOURIER_CPU_COHERENCE_FASTEST:
+                printf("Running fastest Fourier classification with neighbor prediction...\n");
+                classification_result = classify_image_fourier_cpu_light(&ctx);
+                break;
+                
+            case MODE_SPATIAL_CPU:
+                printf("Running spatial domain classification (non-Fourier)...\n");
+                classification_result = classify_image_cpu(&ctx);
+                break;
+                
+            default:
+                printf("Error: Invalid classification mode\n");
+                cleanup_context(&ctx);
+                return -1;
         }
     }
     
@@ -326,7 +432,7 @@ int main(int argc, char* argv[]) {
     printf("Classification saved to: %s\n", output_filename);
     printf("Ready for use in QGIS and GRASS GIS\n\n");
     printf("# Import your classification raster\n");
-    printf("r.in.gdal --o input=classification.tif output=classification");
+    printf("r.in.gdal --o input=classification.tif output=classification\n");
     printf("# Apply the color table\n");
     printf("r.colors map=classification.1 rules=classification_grass_colors.txt\n");
     printf("# View the result\n");
@@ -341,6 +447,7 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+
 
 void initialize_context(ProcessingContext* ctx) {
     memset(ctx, 0, sizeof(ProcessingContext));

@@ -426,3 +426,266 @@ void cleanup_fourier_resources(ProcessingContext* ctx) {
     
     printf("Fourier resources cleaned up\n");
 }
+
+// ------ Fourier with spatial coherence boost --------
+int classify_image_fourier_cpu_optimized(ProcessingContext* ctx) {
+    printf("\nClassifying %lld pixels using Fourier transforms with spatial coherence...\n",
+           (long long)ctx->image->width * ctx->image->height);
+    
+    int fft_complex_size = ctx->fft_size / 2 + 1;
+    
+    // Allocate per-pixel top-3 candidates (very small memory overhead)
+    CandidateMatch* top_candidates = (CandidateMatch*)malloc(
+        ctx->image->width * ctx->image->height * 3 * sizeof(CandidateMatch)
+    );
+    
+    if (!top_candidates) {
+        printf("Warning: Cannot allocate candidate buffer, using standard method\n");
+        return classify_image_fourier_cpu(ctx);
+    }
+    
+    // Phase 1: Find top 3 candidates for each pixel
+    printf("Phase 1: Computing top-3 candidates per pixel...\n");
+    
+    #pragma omp parallel for schedule(dynamic, 100)
+    for (int y = 0; y < ctx->image->height; y++) {
+        int thread_id = omp_get_thread_num();
+        float* input = ctx->thread_fft_input[thread_id];
+        float complex* output = ctx->thread_fft_output[thread_id];
+        float* mag = ctx->thread_fft_mag[thread_id];
+        fftwf_plan plan = ctx->thread_fft_plans[thread_id];
+        
+        for (int x = 0; x < ctx->image->width; x++) {
+            int pixel_idx = y * ctx->image->width + x;
+            
+            // Extract and zero-pad pixel spectrum
+            memset(input, 0, ctx->fft_size * sizeof(float));
+            for (int b = 0; b < ctx->image->bands; b++) {
+                input[b] = ctx->image->data[b * ctx->image->width * ctx->image->height + pixel_idx];
+            }
+            
+            // Compute pixel FFT
+            fftwf_execute(plan);
+            
+            // Compute magnitude spectrum
+            for (int j = 0; j < fft_complex_size; j++) {
+                mag[j] = cabsf(output[j]);
+            }
+            
+            // Find top 3 matching materials (minimal overhead)
+            CandidateMatch top3[3] = {
+                {0, -1.0f}, {0, -1.0f}, {0, -1.0f}
+            };
+            
+            for (int ref = 0; ref < ctx->num_reference_vectors; ref++) {
+                float similarity = calculate_fourier_similarity_optimized(
+                    output, ctx->reference_fft[ref],
+                    mag, ctx->reference_fft_mag[ref],
+                    fft_complex_size
+                );
+                
+                // Insert into top 3 if better
+                if (similarity > top3[2].similarity) {
+                    if (similarity > top3[0].similarity) {
+                        top3[2] = top3[1];
+                        top3[1] = top3[0];
+                        top3[0] = (CandidateMatch){ref, similarity};
+                    } else if (similarity > top3[1].similarity) {
+                        top3[2] = top3[1];
+                        top3[1] = (CandidateMatch){ref, similarity};
+                    } else {
+                        top3[2] = (CandidateMatch){ref, similarity};
+                    }
+                }
+            }
+            
+            // Store top 3 candidates
+            int cand_base = pixel_idx * 3;
+            top_candidates[cand_base] = top3[0];
+            top_candidates[cand_base + 1] = top3[1];
+            top_candidates[cand_base + 2] = top3[2];
+            
+            // Initial classification (will be refined)
+            ctx->result->classification[pixel_idx] = (uint16_t)top3[0].material_id;
+            ctx->result->confidence[pixel_idx] = top3[0].similarity;
+        }
+        
+        if (y % 100 == 0) {
+            printf("  Phase 1: Processed %d/%d rows (%.1f%%)\n",
+                   y + 1, ctx->image->height,
+                   100.0 * (y + 1) / ctx->image->height);
+        }
+    }
+    
+    // Phase 2: Spatial coherence refinement (very fast - no FFT needed)
+    printf("Phase 2: Applying spatial coherence refinement...\n");
+    
+    int refinements = 0;
+    
+    #pragma omp parallel for schedule(dynamic, 100) reduction(+:refinements)
+    for (int y = 1; y < ctx->image->height - 1; y++) {
+        for (int x = 1; x < ctx->image->width - 1; x++) {
+            int pixel_idx = y * ctx->image->width + x;
+            int cand_base = pixel_idx * 3;
+            
+            // Count neighbor materials (3x3 window, excluding center)
+            int neighbor_votes[3] = {0, 0, 0}; // Votes for each of our top-3
+            
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    if (dx == 0 && dy == 0) continue;
+                    
+                    int nx = x + dx;
+                    int ny = y + dy;
+                    int neighbor_idx = ny * ctx->image->width + nx;
+                    int neighbor_material = ctx->result->classification[neighbor_idx];
+                    
+                    // Check if neighbor matches any of our top-3 candidates
+                    for (int c = 0; c < 3; c++) {
+                        if (top_candidates[cand_base + c].material_id == neighbor_material) {
+                            neighbor_votes[c]++;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Find best candidate considering spatial coherence
+            int best_candidate = 0;
+            float best_score = top_candidates[cand_base].similarity;
+            
+            for (int c = 1; c < 3; c++) {
+                // Boost score based on neighbor agreement
+                // Weight: 80% similarity + 20% spatial coherence
+                float spatial_boost = neighbor_votes[c] / 8.0f; // Max 8 neighbors
+                float combined_score = 0.8f * top_candidates[cand_base + c].similarity + 
+                                      0.2f * spatial_boost;
+                
+                if (combined_score > best_score && neighbor_votes[c] >= 3) {
+                    best_score = combined_score;
+                    best_candidate = c;
+                }
+            }
+            
+            // Apply refinement if a better candidate was found
+            if (best_candidate != 0) {
+                ctx->result->classification[pixel_idx] = 
+                    (uint16_t)top_candidates[cand_base + best_candidate].material_id;
+                ctx->result->confidence[pixel_idx] = 
+                    top_candidates[cand_base + best_candidate].similarity;
+                refinements++;
+            }
+        }
+        
+        if (y % 100 == 0) {
+            printf("  Phase 2: Processed %d/%d rows\n", y + 1, ctx->image->height);
+        }
+    }
+    
+    free(top_candidates);
+    
+    printf("Spatial coherence refinement: %d pixels reclassified (%.2f%%)\n",
+           refinements, 100.0 * refinements / (ctx->image->width * ctx->image->height));
+    printf("Fourier classification with spatial coherence complete\n");
+    
+    return 0;
+}
+
+// Alternative: Even lighter approach - neighbor-aware candidate selection
+// Only refines when there's strong disagreement with neighbors
+int classify_image_fourier_cpu_light(ProcessingContext* ctx) {
+    printf("\nClassifying with lightweight neighbor checking...\n");
+    
+    int fft_complex_size = ctx->fft_size / 2 + 1;
+    
+    #pragma omp parallel for schedule(dynamic, 100)
+    for (int y = 0; y < ctx->image->height; y++) {
+        int thread_id = omp_get_thread_num();
+        float* input = ctx->thread_fft_input[thread_id];
+        float complex* output = ctx->thread_fft_output[thread_id];
+        float* mag = ctx->thread_fft_mag[thread_id];
+        fftwf_plan plan = ctx->thread_fft_plans[thread_id];
+        
+        for (int x = 0; x < ctx->image->width; x++) {
+            int pixel_idx = y * ctx->image->width + x;
+            
+            // Extract and compute FFT
+            memset(input, 0, ctx->fft_size * sizeof(float));
+            for (int b = 0; b < ctx->image->bands; b++) {
+                input[b] = ctx->image->data[b * ctx->image->width * ctx->image->height + pixel_idx];
+            }
+            fftwf_execute(plan);
+            
+            for (int j = 0; j < fft_complex_size; j++) {
+                mag[j] = cabsf(output[j]);
+            }
+            
+            // Get neighbor consensus (if available)
+            int neighbor_material = -1;
+            int neighbor_count = 0;
+            
+            if (x > 0 && y > 0) {
+                int left_material = ctx->result->classification[pixel_idx - 1];
+                int top_material = ctx->result->classification[pixel_idx - ctx->image->width];
+                
+                if (left_material == top_material) {
+                    neighbor_material = left_material;
+                    neighbor_count = 2;
+                }
+            }
+            
+            // Find best match - compare only top candidates
+            float best_similarity = -1.0f;
+            int best_material = 0;
+            float neighbor_similarity = -1.0f;
+            
+            // If we have strong neighbor agreement, check that material first
+            if (neighbor_count >= 2 && neighbor_material >= 0) {
+                neighbor_similarity = calculate_fourier_similarity_optimized(
+                    output, ctx->reference_fft[neighbor_material],
+                    mag, ctx->reference_fft_mag[neighbor_material],
+                    fft_complex_size
+                );
+                
+                // If neighbor match is good (>0.85), use it immediately
+                if (neighbor_similarity > 0.85f) {
+                    ctx->result->classification[pixel_idx] = (uint16_t)neighbor_material;
+                    ctx->result->confidence[pixel_idx] = neighbor_similarity;
+                    continue; // Skip full search
+                }
+                
+                best_similarity = neighbor_similarity;
+                best_material = neighbor_material;
+            }
+            
+            // Full search through all references
+            for (int ref = 0; ref < ctx->num_reference_vectors; ref++) {
+                if (ref == neighbor_material) continue; // Already checked
+                
+                float similarity = calculate_fourier_similarity_optimized(
+                    output, ctx->reference_fft[ref],
+                    mag, ctx->reference_fft_mag[ref],
+                    fft_complex_size
+                );
+                
+                if (similarity > best_similarity) {
+                    best_similarity = similarity;
+                    best_material = ref;
+                }
+            }
+            
+            ctx->result->classification[pixel_idx] = (uint16_t)best_material;
+            ctx->result->confidence[pixel_idx] = best_similarity;
+        }
+        
+        if (y % 100 == 0) {
+            printf("  Processed %d/%d rows (%.1f%%)\n",
+                   y + 1, ctx->image->height,
+                   100.0 * (y + 1) / ctx->image->height);
+        }
+    }
+    
+    printf("Lightweight neighbor-aware classification complete\n");
+    return 0;
+}
+
