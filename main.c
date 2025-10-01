@@ -28,8 +28,6 @@
 //Fourier transform reflectance dans bibliotheque et par pixel pour comparaison
 #include "fourier.h"
 
-//TODO geosampling remember last three pixels class and compare directly with that class, if the difference is small apply directly the class without more computation
-
 // For Windows compatibility
 #ifdef _WIN32
 #define strdup _strdup
@@ -47,7 +45,6 @@
 
 #define MAX_VECTOR_SIZE 4096
 #define SIMILARITY_THRESHOLD 0.75
-#define GPU_MEMORY_THRESHOLD (1024 * 1024 * 1024) // 1GB
 #define MAX_FILENAME 512
 
 // Function prototypes
@@ -60,75 +57,6 @@ float calculate_pixel_similarity(float* pixel_reflectance, float* pixel_waveleng
                                 float* ref_reflectance, float* ref_wavelengths, int ref_bands);
 void interpolate_spectrum(float* src_wav, float* src_ref, int src_size, 
                          float* dst_wav, float* dst_ref, int dst_size);
-
-
-// OpenCL kernel source for image classification
-#ifdef OPENCL_AVAILABLE
-const char* opencl_classify_kernel_source = 
-"__kernel void classify_pixels(__global float* image_data,\n"
-"                             __global float* image_wavelengths,\n"
-"                             __global float* reference_data,\n"
-"                             __global float* reference_wavelengths,\n"
-"                             __global unsigned char* classification,\n"
-"                             __global float* confidence,\n"
-"                             int width, int height, int image_bands,\n"
-"                             int num_references, __global int* ref_band_counts) {\n"
-"    int x = get_global_id(0);\n"
-"    int y = get_global_id(1);\n"
-"    \n"
-"    if (x >= width || y >= height) return;\n"
-"    \n"
-"    int pixel_idx = y * width + x;\n"
-"    int pixel_offset = pixel_idx * image_bands;\n"
-"    \n"
-"    float best_similarity = -1.0f;\n"
-"    int best_material = 0;\n"
-"    \n"
-"    int ref_offset = 0;\n"
-"    for (int ref = 0; ref < num_references; ref++) {\n"
-"        int ref_bands = ref_band_counts[ref];\n"
-"        \n"
-"        // Calculate cosine similarity\n"
-"        float dot_product = 0.0f;\n"
-"        float norm_pixel = 0.0f;\n"
-"        float norm_ref = 0.0f;\n"
-"        \n"
-"        // Simple wavelength matching (nearest neighbor)\n"
-"        for (int i = 0; i < image_bands; i++) {\n"
-"            float pixel_val = image_data[pixel_offset + i];\n"
-"            float img_wav = image_wavelengths[i];\n"
-"            \n"
-"            // Find closest reference wavelength\n"
-"            int closest_ref = 0;\n"
-"            float min_diff = fabs(reference_wavelengths[ref_offset] - img_wav);\n"
-"            for (int j = 1; j < ref_bands; j++) {\n"
-"                float diff = fabs(reference_wavelengths[ref_offset + j] - img_wav);\n"
-"                if (diff < min_diff) {\n"
-"                    min_diff = diff;\n"
-"                    closest_ref = j;\n"
-"                }\n"
-"            }\n"
-"            \n"
-"            float ref_val = reference_data[ref_offset + ref_bands + closest_ref];\n"
-"            \n"
-"            dot_product += pixel_val * ref_val;\n"
-"            norm_pixel += pixel_val * pixel_val;\n"
-"            norm_ref += ref_val * ref_val;\n"
-"        }\n"
-"        \n"
-"        float similarity = dot_product / (sqrt(norm_pixel) * sqrt(norm_ref));\n"
-"        if (similarity > best_similarity) {\n"
-"            best_similarity = similarity;\n"
-"            best_material = ref;\n"
-"        }\n"
-"        \n"
-"        ref_offset += ref_bands * 2;\n"
-"    }\n"
-"    \n"
-"    classification[pixel_idx] = (unsigned char)best_material;\n"
-"    confidence[pixel_idx] = best_similarity;\n"
-"}\n";
-#endif
 
 
 
@@ -256,7 +184,8 @@ int main(int argc, char* argv[]) {
     
     ProcessingContext ctx;
     initialize_context(&ctx);
-    
+    ctx.classification_mode = mode;
+
     // Load reference vectors from header file
     printf("\nLoading reference materials from header file...\n");
     if (load_reference_vectors_from_header(&ctx) != 0) {

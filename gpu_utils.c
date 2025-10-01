@@ -1,4 +1,9 @@
 #include "common_types.h"
+#include <string.h>  // For memcpy warning
+
+#ifdef OPENCL_AVAILABLE
+#include "opencl_kernels.h"
+#endif
 
 int detect_gpu_capabilities(ProcessingContext* ctx) {
     #ifdef CUDA_AVAILABLE
@@ -164,9 +169,29 @@ int classify_image_cuda(ProcessingContext* ctx) {
     return 0;
 }
 #endif
+
 #ifdef OPENCL_AVAILABLE
 int classify_image_opencl(ProcessingContext* ctx) {
-    printf("Classifying %d pixels using OpenCL GPU...\n", ctx->image->width * ctx->image->height);
+    // Check if Fourier mode is requested but not available in OpenCL yet
+    if (ctx->classification_mode != MODE_SPATIAL_CPU) {
+        printf("Warning: OpenCL currently only supports spatial domain classification\n");
+        printf("Falling back to CPU Fourier classification...\n");
+        
+        // Call appropriate CPU Fourier function based on mode
+        switch (ctx->classification_mode) {
+            case 1: // MODE_FOURIER_CPU
+                return classify_image_fourier_cpu(ctx);
+            case 2: // MODE_FOURIER_CPU_COHERENCE_QUALITY
+                return classify_image_fourier_cpu_optimized(ctx);
+            case 3: // MODE_FOURIER_CPU_COHERENCE_FASTEST
+                return classify_image_fourier_cpu_light(ctx);
+            default:
+                break;
+        }
+    }
+    
+    printf("Classifying %d pixels using OpenCL GPU (spatial domain)...\n", 
+           ctx->image->width * ctx->image->height);
     
     // Create array of reference band counts
     int* ref_band_counts = (int*)malloc(ctx->num_reference_vectors * sizeof(int));

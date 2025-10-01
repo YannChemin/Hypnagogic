@@ -105,6 +105,7 @@ all: check-gdal check-fftw3 $(TARGET_CPU)
 # Clean build artifacts
 clean:
 	rm -f $(TARGET_CPU) $(TARGET_CUDA) $(TARGET_OPENCL)
+	rm -f main.o·gis_export.o·gpu_utils.o·io_utils.o·fourier.o
 	rm -rf .fourier_cache
 	@echo "Cleaned build artifacts and Fourier cache"
 

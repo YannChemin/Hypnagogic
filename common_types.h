@@ -15,6 +15,8 @@
 #include <CL/cl.h>
 #endif
 
+#define GPU_MEMORY_THRESHOLD (2 * 1024 * 1024 * 1024) // 2GB
+
 // Forward declarations
 typedef struct HyperspectralVector HyperspectralVector;
 typedef struct HyperspectralImage HyperspectralImage;
@@ -85,6 +87,7 @@ struct ProcessingContext {
     float complex** reference_fft;  ///< Pre-computed reference FFTs
     float** reference_fft_mag;      ///< Pre-computed FFT magnitudes
     float* reference_energies;      ///< Pre-computed spectral energies
+    int classification_mode;  // 0=spatial, 1=fourier_baseline, 2=fourier_quality, 3=fourier_fastest
     
     // Thread-local FFT resources for parallel processing
     fftwf_plan* thread_fft_plans;      ///< FFTW plans (one per thread)
